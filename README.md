@@ -26,7 +26,8 @@ pnpm start:dev
 ```text
 src/
   common/
-    decorators/      # @Public, @CurrentUser e @Roles
+    authorization/   # permissões e matriz papel → ações
+    decorators/      # @Public, @CurrentUser, @Roles e @Permissions
     dto/             # paginação validada
     filters/         # erros HTTP padronizados
     guards/          # autenticação e autorização globais
@@ -50,7 +51,7 @@ scripts/             # setup e execução compatíveis com Windows/Linux
 
 Crie funcionalidades em `src/modules/<nome>`, com controller, service, module e DTOs locais. Importe o módulo no `AppModule`. Coloque em `common` somente o que for efetivamente compartilhado. Injete `PrismaService` importando `PrismaModule`; mantenha regras de negócio nos services. O template não impõe repositories genéricos ou camadas extras sobre o Prisma.
 
-Todas as rotas novas são protegidas automaticamente. Use `@Public()` para liberar uma rota e `@Roles(Role.ADMIN)` para exigir o papel administrativo. `@CurrentUser('sub')` fornece o ID autenticado. Os guards consultam o usuário no banco, aplicando imediatamente desativação, exclusão e mudança de papel.
+Todas as rotas novas são protegidas automaticamente. Use `@Public()` para liberar uma rota e `@Permissions(Permission.USERS_READ)` para exigir uma ação. `@Roles(...)` permanece disponível para compatibilidade, mas prefira permissões em módulos novos. `@CurrentUser('sub')` fornece o ID autenticado. Os guards consultam o usuário no banco, aplicando imediatamente desativação, exclusão e mudança de papel.
 
 ## Autenticação
 
@@ -63,8 +64,8 @@ O prefixo padrão é `/api`:
 - `POST /api/auth/logout`: usa access token; responde 204 e revoga a renovação da sessão.
 - `GET /api/auth/sessions`: lista as sessões ativas da própria conta e marca a atual com `isCurrent`.
 - `DELETE /api/auth/sessions/:id`: revoga uma sessão da própria conta, inclusive a atual; responde 204.
-- `GET /api/users?page=1&limit=20` e `GET /api/users/:id`: exigem `ADMIN`, retornam apenas campos públicos. Limite máximo: 100.
-- `PATCH /api/users/:id`: exige `ADMIN`; aceita `role` e/ou `isActive` para administrar uma conta.
+- `GET /api/users?page=1&limit=20` e `GET /api/users/:id`: exigem `users:read`, retornam apenas campos públicos. Limite máximo: 100.
+- `PATCH /api/users/:id`: exige `users:manage`; aceita `role` e/ou `isActive` para administrar uma conta.
 
 No Swagger, há autorizações separadas para access token e refresh token.
 
@@ -92,9 +93,20 @@ pnpm users:create-admin
 
 ## Auditoria
 
-`GET /api/audit-logs` exige `ADMIN` e retorna eventos paginados. Aceita `page`, `limit`, `actorUserId`, `action`, `targetType`, `targetId`, `createdAfter` e `createdBefore`.
+`GET /api/audit-logs` exige `audit-logs:read` e retorna eventos paginados. Aceita `page`, `limit`, `actorUserId`, `action`, `targetType`, `targetId`, `createdAfter` e `createdBefore`.
 
 O template registra provisionamento de administradores, revogação de sessão, alteração de papel e ativação/desativação de usuário. Cada evento inclui o ator quando houver, alvo, IP, `X-Request-Id`, data e metadados. Senhas, tokens, segredos, cookies e hashes são removidos dos metadados antes de persistir.
+
+## Permissões
+
+Os papéis são um conjunto de permissões em `src/common/authorization/role-permissions.ts`:
+
+- `USER`: sem acesso administrativo.
+- `SUPPORT`: `users:read`.
+- `OPERATOR`: `users:read`, `users:manage` e `audit-logs:read`.
+- `ADMIN`: todas as permissões declaradas.
+
+Para criar uma ação nova, adicione-a ao enum `Permission`, atribua-a aos papéis necessários e decore a rota com `@Permissions(Permission.NOVA_ACAO)`. O guard exige todas as permissões declaradas na rota. Para criar um papel, inclua-o em `Role` no schema Prisma e na matriz; o DTO administrativo e o Swagger passam a reconhecer o novo valor após `pnpm prisma:generate`.
 
 Workspaces, leads, integrações Apify e outros domínios do Sellow não fazem parte desta base. Recuperação de senha, confirmação de email e login social podem ser adicionados como módulos conforme a necessidade.
 

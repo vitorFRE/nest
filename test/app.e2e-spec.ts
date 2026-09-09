@@ -133,6 +133,19 @@ describe('API with real SQLite', () => {
       .expect(400);
     await prisma.user.update({
       where: { id: session.user.id },
+      data: { role: 'SUPPORT' },
+    });
+    await request(app.getHttpServer())
+      .get('/api/users?page=1&limit=1')
+      .set('Authorization', auth)
+      .expect(200);
+    await request(app.getHttpServer())
+      .patch('/api/users/' + session.user.id)
+      .set('Authorization', auth)
+      .send({ isActive: true })
+      .expect(403);
+    await prisma.user.update({
+      where: { id: session.user.id },
       data: { role: 'USER' },
     });
     await request(app.getHttpServer())

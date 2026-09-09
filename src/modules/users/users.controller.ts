@@ -10,9 +10,10 @@ import {
   Req,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Roles } from '../../common/decorators/roles.decorator';
+import { Permission } from '../../common/authorization/permission';
+import { Permissions } from '../../common/decorators/permissions.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
-import { AuditAction, Role } from '../../generated/prisma/enums';
+import { AuditAction } from '../../generated/prisma/enums';
 import { UsersService } from './users.service';
 import { UpdateUserAdminDto } from './dto/update-user-admin.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -22,7 +23,7 @@ import { AuditService } from '../audit/audit.service';
 
 @ApiTags('users')
 @ApiBearerAuth()
-@Roles(Role.ADMIN)
+@Permissions(Permission.USERS_READ)
 @Controller('users')
 export class UsersController {
   constructor(
@@ -41,6 +42,7 @@ export class UsersController {
   }
 
   @Patch(':id')
+  @Permissions(Permission.USERS_MANAGE)
   async update(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: UpdateUserAdminDto,
