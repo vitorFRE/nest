@@ -161,6 +161,8 @@ Mantenha um registro das migrations aplicadas no processo de deploy. Esse fluxo 
 
 ## Build e produção
 
+O template inclui um `Dockerfile` multi-stage com Node 24. Ele compila a aplicação, gera o client Prisma, descarta dependências de desenvolvimento e executa o processo como o usuário sem privilégios `node`. A imagem expõe a porta 3000 e verifica `/health`.
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
@@ -170,6 +172,22 @@ pnpm start:prod
 Forneça `NODE_ENV=production`, os segredos JWT, `DATABASE_URL`, `DATABASE_AUTH_TOKEN` e as origens reais de CORS pelo ambiente de execução. Configure `ALLOW_REGISTRATION=false` e `SWAGGER_ENABLED=false`, a menos que o produto precise desses recursos públicos. Não reutilize o `.env` de desenvolvimento no deploy.
 
 O build compila também o client gerado em `dist/generated/prisma`; não precisa de `cp`, Bash ou cópia manual de arquivos. O entrypoint é `dist/main.js`. A etapa de build precisa das dependências de desenvolvimento; o runtime precisa de `dist` e das dependências de produção. Instale dependências na plataforma de destino porque bcrypt/libSQL incluem componentes nativos.
+
+## Deploy com Dokploy
+
+O CD publica a imagem no GitHub Container Registry (GHCR) após a CI passar na branch `main`. Em seguida, chama a API do Dokploy para baixar e executar a imagem pronta. Assim, a KVM não precisa compilar Node, Prisma e bcrypt durante um deploy.
+
+Configure uma aplicação no Dokploy com:
+
+1. Fonte `Docker` apontando para `ghcr.io/<dono>/<repositorio>:latest`. Caso o pacote GHCR seja privado, cadastre no Dokploy um token GitHub com permissão `read:packages`.
+2. Variáveis de ambiente no serviço: `NODE_ENV=production`, `PORT=3000`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `APP_CORS_ORIGINS`, `ALLOW_REGISTRATION=false` e `SWAGGER_ENABLED=false`.
+3. Domínio no painel do Dokploy, porta do container `3000` e o registro DNS A apontando para a KVM. O Dokploy gerencia o roteamento e HTTPS.
+
+No repositório GitHub, crie a variável `DOKPLOY_APPLICATION_ID` em **Settings → Secrets and variables → Actions → Variables**. Crie o ambiente `production` e cadastre nele os secrets `DOKPLOY_URL` e `DOKPLOY_API_KEY`. Proteja esse ambiente com aprovador obrigatório se desejar revisar cada publicação.
+
+Sem `DOKPLOY_APPLICATION_ID`, os jobs de imagem e deploy são ignorados: a CI continua validando o projeto normalmente. O workflow nunca envia os segredos da aplicação ao GitHub; eles ficam no Dokploy.
+
+As migrations do Turso continuam manuais e revisadas, como descrito na seção anterior. A publicação do container não aplica migrations automaticamente.
 
 ## Verificação
 
@@ -186,11 +204,11 @@ Execute `pnpm test --runInBand` para os unitários, `pnpm test:coverage -- --run
 
 O workflow de CI executa no Linux com Node 24. Execute `pnpm lint:fix` e `pnpm format` para ajustes automáticos.
 
-### O que a CI faz
+### O que a CI/CD faz
 
 O arquivo `.github/workflows/ci.yml` configura a integração contínua (CI) no GitHub Actions. Em cada push ou pull request, o GitHub instala as dependências pelo lockfile e executa formatação, lint, tipos, testes e build no Linux. Isso ajuda a identificar uma alteração que quebrou o projeto antes de integrá-la ao trabalho da equipe. Para impedir merges quando a verificação falhar, configure os checks como obrigatórios nas regras de proteção da branch do repositório.
 
-Este workflow faz somente CI. Entrega/deploy contínuo (CD) seria uma etapa adicional para publicar uma versão no servidor ou plataforma escolhida. O template não contém deploy automático, não publica a API e não aplica migrations ao Turso. O workflow passa a executar quando o projeto é enviado a um repositório GitHub com Actions habilitado; localmente, o equivalente é `pnpm check`.
+Quando a variável `DOKPLOY_APPLICATION_ID` está configurada, um push na `main` que passa pela CI publica a imagem no GHCR e dispara o deploy no Dokploy. O job usa o ambiente GitHub `production`, permitindo aprovação antes de usar a chave da API do Dokploy. O workflow passa a executar quando o projeto é enviado a um repositório GitHub com Actions habilitado; localmente, o equivalente é `pnpm check`.
 
 ## Reutilizar em outro projeto
 

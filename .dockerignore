@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+.vscode
+.env
+.env.*
+!.env.example
+.test-databases
+coverage
+dist
+node_modules
+dev.db
+*.db
+*.db-*
+*.log
+README.md

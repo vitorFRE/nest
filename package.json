@@ -7,7 +7,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/*.mjs\" prisma.config.ts",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/*.mjs\" prisma.config.ts README.md \".github/workflows/*.yml\"",
     "start": "nest start",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
@@ -25,7 +25,7 @@
     "users:create-admin": "pnpm build && node dist/scripts/create-admin.js",
     "lint:fix": "pnpm lint --fix",
     "type-check": "tsc --noEmit",
-    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/*.mjs\" prisma.config.ts",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/*.mjs\" prisma.config.ts README.md \".github/workflows/*.yml\"",
     "prisma:generate": "node scripts/prisma.mjs generate",
     "prisma:migrate": "node scripts/prisma.mjs migrate dev",
     "prisma:migrate:deploy": "node scripts/prisma.mjs migrate deploy",
