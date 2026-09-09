@@ -4,6 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
+import { Role } from '../../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
 import { paginate } from '../../common/utils/pagination';
@@ -60,16 +61,21 @@ export class UsersService {
     return user;
   }
 
-  updateRefreshToken(id: string, refreshToken: string | null) {
-    return this.prisma.user.update({ where: { id }, data: { refreshToken } });
-  }
-
-  // Compare-and-swap: only one request may consume a refresh token.
-  async rotateRefreshToken(id: string, previous: string, next: string) {
-    const result = await this.prisma.user.updateMany({
-      where: { id, refreshToken: previous, isActive: true },
-      data: { refreshToken: next },
-    });
-    return result.count === 1;
+  async updateAdmin(id: string, data: { role?: Role; isActive?: boolean }) {
+    try {
+      return await this.prisma.user.update({
+        where: { id },
+        data,
+        select: userProfileSelect,
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2025'
+      ) {
+        throw new NotFoundException('Usuário não encontrado');
+      }
+      throw error;
+    }
   }
 }

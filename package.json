@@ -15,12 +15,14 @@
     "lint": "eslint \"{src,test}/**/*.ts\" prisma.config.ts",
     "test": "jest",
     "test:watch": "jest --watch",
-    "test:cov": "jest --coverage",
+    "test:coverage": "jest --coverage",
+    "test:cov": "pnpm test:coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "node scripts/test-e2e.mjs",
     "postinstall": "node scripts/prisma.mjs generate",
     "prebuild": "node scripts/prisma.mjs generate",
     "setup:env": "node scripts/setup-env.mjs",
+    "users:create-admin": "pnpm build && node dist/scripts/create-admin.js",
     "lint:fix": "pnpm lint --fix",
     "type-check": "tsc --noEmit",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/*.mjs\" prisma.config.ts",
@@ -28,7 +30,7 @@
     "prisma:migrate": "node scripts/prisma.mjs migrate dev",
     "prisma:migrate:deploy": "node scripts/prisma.mjs migrate deploy",
     "prisma:studio": "node scripts/prisma.mjs studio",
-    "check": "pnpm lint && pnpm type-check && pnpm test --runInBand && pnpm test:e2e && pnpm build"
+    "check": "pnpm lint && pnpm type-check && pnpm test:coverage --runInBand && pnpm test:e2e && pnpm build"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -93,6 +95,14 @@
       "!main.ts"
     ],
     "coverageDirectory": "../coverage",
+    "coverageThreshold": {
+      "global": {
+        "branches": 65,
+        "functions": 50,
+        "lines": 45,
+        "statements": 45
+      }
+    },
     "testEnvironment": "node",
     "modulePathIgnorePatterns": [
       "<rootDir>/generated/"

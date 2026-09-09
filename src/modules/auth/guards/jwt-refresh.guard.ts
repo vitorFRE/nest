@@ -32,7 +32,9 @@ export class JwtRefreshGuard implements CanActivate {
       if (
         payload.type !== 'refresh' ||
         typeof payload.sub !== 'string' ||
-        !payload.sub
+        !payload.sub ||
+        typeof payload.sessionId !== 'string' ||
+        !payload.sessionId
       )
         throw new Error('Invalid payload');
       request.user = { ...payload, refreshToken: token };

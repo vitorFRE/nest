@@ -12,7 +12,7 @@ describe('UsersService', () => {
       create: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
-      updateMany: jest.fn(),
+      update: jest.fn(),
     },
     $transaction: jest.fn(),
   };
@@ -114,17 +114,31 @@ describe('UsersService', () => {
     });
   });
 
-  it.each([0, 1])(
-    'should report rotation success only when one active session matches (count=%i)',
-    async (count) => {
-      prisma.user.updateMany.mockResolvedValue({ count });
-      await expect(
-        service.rotateRefreshToken('user-id', 'previous', 'next'),
-      ).resolves.toBe(count === 1);
-      expect(prisma.user.updateMany).toHaveBeenCalledWith({
-        where: { id: 'user-id', refreshToken: 'previous', isActive: true },
-        data: { refreshToken: 'next' },
-      });
-    },
-  );
+  it('should update only allowed administrative user fields with the public select', async () => {
+    const profile = { id: 'user-id', role: 'ADMIN', isActive: false };
+    prisma.user.update.mockResolvedValue(profile);
+    await expect(
+      service.updateAdmin('user-id', { role: 'ADMIN', isActive: false }),
+    ).resolves.toEqual(profile);
+    const args = prisma.user.update.mock.calls[0][0] as {
+      select: Record<string, boolean>;
+    };
+    expect(args).toMatchObject({
+      where: { id: 'user-id' },
+      data: { role: 'ADMIN', isActive: false },
+    });
+    expect(args.select.password).not.toBe(true);
+  });
+
+  it('should translate a missing user during administrative update to 404', async () => {
+    prisma.user.update.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('Missing record', {
+        code: 'P2025',
+        clientVersion: '7.5.0',
+      }),
+    );
+    await expect(
+      service.updateAdmin('missing', { role: 'ADMIN' }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+  });
 });

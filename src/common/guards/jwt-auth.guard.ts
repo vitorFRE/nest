@@ -9,6 +9,7 @@ import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
 import { AllConfigType } from '../../config/config.type';
 import { UsersService } from '../../modules/users/users.service';
+import { SessionsService } from '../../modules/sessions/sessions.service';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { AuthRequest } from '../types/auth-request.type';
 import { JwtPayload } from '../types/jwt-payload.type';
@@ -21,6 +22,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly configService: ConfigService<AllConfigType>,
     private readonly reflector: Reflector,
     private readonly usersService: UsersService,
+    private readonly sessionsService: SessionsService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -45,7 +47,9 @@ export class JwtAuthGuard implements CanActivate {
       if (
         payload.type !== 'access' ||
         typeof payload.sub !== 'string' ||
-        !payload.sub
+        !payload.sub ||
+        typeof payload.sessionId !== 'string' ||
+        !payload.sessionId
       )
         throw new Error('Invalid payload');
     } catch {
@@ -54,11 +58,15 @@ export class JwtAuthGuard implements CanActivate {
 
     const user = await this.usersService.findById(payload.sub);
     if (!user?.isActive) throw new UnauthorizedException('Conta indisponível');
+    if (!(await this.sessionsService.isActive(payload.sessionId, user.id))) {
+      throw new UnauthorizedException('Sessão indisponível');
+    }
     request.user = {
       sub: user.id,
       email: user.email,
       role: user.role,
       type: 'access',
+      sessionId: payload.sessionId,
     };
     return true;
   }

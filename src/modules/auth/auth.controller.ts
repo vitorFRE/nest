@@ -43,7 +43,11 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('refresh')
   refresh(@CurrentUser() user: JwtPayloadWithRefresh) {
-    return this.authService.refreshTokens(user.sub, user.refreshToken);
+    return this.authService.refreshTokens(
+      user.sub,
+      user.sessionId,
+      user.refreshToken,
+    );
   }
 
   @ApiBearerAuth()
@@ -55,7 +59,7 @@ export class AuthController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.NO_CONTENT)
   @Post('logout')
-  logout(@CurrentUser('sub') userId: string) {
-    return this.authService.logout(userId);
+  logout(@CurrentUser() user: JwtPayloadWithRefresh) {
+    return this.authService.logout(user.sub, user.sessionId);
   }
 }

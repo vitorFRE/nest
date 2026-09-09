@@ -5,6 +5,7 @@ export type JwtPayload = {
   email: string;
   role: Role;
   type: 'access' | 'refresh';
+  sessionId: string;
 };
 
 export type JwtPayloadWithRefresh = JwtPayload & { refreshToken: string };

@@ -43,6 +43,7 @@ describe('RolesGuard', () => {
       email: 'user@example.com',
       role: 'USER',
       type: 'access',
+      sessionId: 'session-id',
     };
     expect(() => guard.canActivate(context)).toThrow(ForbiddenException);
   });
@@ -56,6 +57,7 @@ describe('RolesGuard', () => {
       email: 'user@example.com',
       role: 'USER',
       type: 'access',
+      sessionId: 'session-id',
     };
     expect(guard.canActivate(context)).toBe(true);
   });

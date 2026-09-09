@@ -89,8 +89,11 @@ describe('API with real SQLite', () => {
     expect(session.user).not.toHaveProperty('refreshToken');
     const stored = await prisma.user.findUniqueOrThrow({ where: { email } });
     expect(await bcrypt.compare(password, stored.password)).toBe(true);
-    expect(stored.refreshToken).toMatch(/^[a-f0-9]{64}$/);
-    expect(stored.refreshToken).not.toBe(session.refreshToken);
+    const storedSession = await prisma.session.findFirstOrThrow({
+      where: { userId: stored.id },
+    });
+    expect(storedSession.refreshTokenHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(storedSession.refreshTokenHash).not.toBe(session.refreshToken);
     await request(app.getHttpServer())
       .post('/api/auth/register')
       .send({ email: email.toUpperCase(), password })
@@ -169,7 +172,7 @@ describe('API with real SQLite', () => {
     }
   });
 
-  it('should invalidate the previous refresh token on login', async () => {
+  it('should create independent sessions when the user logs in from another device', async () => {
     await request(app.getHttpServer())
       .post('/api/auth/login')
       .send({ email, password: 'wrong' })
@@ -179,11 +182,13 @@ describe('API with real SQLite', () => {
       .post('/api/auth/login')
       .send({ email, password })
       .expect(200);
-    session = response.body as Session;
-    await request(app.getHttpServer())
+    const secondDevice = response.body as Session;
+    expect(secondDevice.refreshToken).not.toBe(previous);
+    const refreshed = await request(app.getHttpServer())
       .post('/api/auth/refresh')
-      .set('Authorization', `Bearer ${previous}`)
-      .expect(401);
+      .set('Authorization', 'Bearer ' + previous)
+      .expect(200);
+    session = { ...session, ...refreshed.body };
   });
 
   it('should rotate refresh tokens only once even for concurrent requests', async () => {
@@ -206,6 +211,102 @@ describe('API with real SQLite', () => {
       .post('/api/auth/refresh')
       .set('Authorization', `Bearer ${previous}`)
       .expect(401);
+  });
+
+  it('should list and revoke another device session immediately', async () => {
+    const secondDevice = (
+      await request(app.getHttpServer())
+        .post('/api/auth/login')
+        .send({ email, password })
+        .expect(200)
+    ).body as Session;
+    const jwt = new JwtService();
+    const secondClaims = jwt.decode(secondDevice.accessToken) as {
+      sessionId: string;
+    };
+    const listed = await request(app.getHttpServer())
+      .get('/api/auth/sessions')
+      .set('Authorization', 'Bearer ' + session.accessToken)
+      .expect(200);
+    expect(listed.body).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: secondClaims.sessionId,
+          isCurrent: false,
+        }),
+      ]),
+    );
+    await request(app.getHttpServer())
+      .delete('/api/auth/sessions/' + secondClaims.sessionId)
+      .set('Authorization', 'Bearer ' + session.accessToken)
+      .expect(204);
+    await request(app.getHttpServer())
+      .get('/api/auth/me')
+      .set('Authorization', 'Bearer ' + secondDevice.accessToken)
+      .expect(401);
+    await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .set('Authorization', 'Bearer ' + secondDevice.refreshToken)
+      .expect(401);
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: 'SESSION_REVOKED', targetId: secondClaims.sessionId },
+    });
+    expect(audit.metadata).toBe('{"currentSession":false}');
+  });
+
+  it('should audit administrative user changes and restrict audit log access', async () => {
+    const target = await prisma.user.create({
+      data: {
+        email: 'managed-user@example.com',
+        password: await bcrypt.hash('managed-user-password', 4),
+      },
+    });
+    await prisma.user.update({
+      where: { id: session.user.id },
+      data: { role: 'ADMIN' },
+    });
+    const auth = 'Bearer ' + session.accessToken;
+    await request(app.getHttpServer())
+      .patch('/api/users/' + target.id)
+      .set('Authorization', auth)
+      .send({ role: 'ADMIN', isActive: false })
+      .expect(200)
+      .expect(({ body }) => {
+        expect(body).toMatchObject({
+          id: target.id,
+          role: 'ADMIN',
+          isActive: false,
+        });
+        expect(body).not.toHaveProperty('password');
+      });
+    const logs = await request(app.getHttpServer())
+      .get('/api/audit-logs?targetId=' + target.id)
+      .set('Authorization', auth)
+      .expect(200);
+    expect(logs.body.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'USER_ROLE_UPDATED',
+          actorUserId: session.user.id,
+          targetId: target.id,
+          metadata: { role: 'ADMIN' },
+        }),
+        expect.objectContaining({
+          action: 'USER_STATUS_UPDATED',
+          actorUserId: session.user.id,
+          targetId: target.id,
+          metadata: { isActive: false },
+        }),
+      ]),
+    );
+    await prisma.user.update({
+      where: { id: session.user.id },
+      data: { role: 'USER' },
+    });
+    await request(app.getHttpServer())
+      .get('/api/audit-logs')
+      .set('Authorization', auth)
+      .expect(403);
   });
 
   it('should block disabled accounts for access, login and refresh', async () => {

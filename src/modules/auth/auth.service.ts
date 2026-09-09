@@ -12,6 +12,7 @@ import { AllConfigType } from '../../config/config.type';
 import { User } from '../../generated/prisma/client';
 import { UsersService } from '../users/users.service';
 import { toUserProfile } from '../users/user-profile';
+import { SessionsService } from '../sessions/sessions.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
@@ -23,6 +24,7 @@ const tokenHash = (token: string) =>
 export class AuthService {
   constructor(
     private readonly usersService: UsersService,
+    private readonly sessionsService: SessionsService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService<AllConfigType>,
   ) {}
@@ -54,23 +56,20 @@ export class AuthService {
     return this.createSession(user);
   }
 
-  async logout(userId: string): Promise<void> {
-    await this.usersService.updateRefreshToken(userId, null);
+  async logout(userId: string, sessionId: string): Promise<void> {
+    await this.sessionsService.revokeForUser(sessionId, userId);
   }
 
-  async refreshTokens(userId: string, token: string) {
+  async refreshTokens(userId: string, sessionId: string, token: string) {
     const user = await this.usersService.findById(userId);
     const previous = tokenHash(token);
-    if (
-      !user?.isActive ||
-      !user.refreshToken ||
-      user.refreshToken !== previous
-    ) {
+    if (!user?.isActive) {
       throw new UnauthorizedException('Refresh token inválido');
     }
-    const tokens = await this.generateTokens(user);
+    const tokens = await this.generateTokens(user, sessionId);
     if (
-      !(await this.usersService.rotateRefreshToken(
+      !(await this.sessionsService.rotateRefreshToken(
+        sessionId,
         user.id,
         previous,
         tokenHash(tokens.refreshToken),
@@ -88,17 +87,26 @@ export class AuthService {
   }
 
   private async createSession(user: User) {
-    const tokens = await this.generateTokens(user);
-    await this.usersService.updateRefreshToken(
+    const sessionId = randomUUID();
+    const tokens = await this.generateTokens(user, sessionId);
+    const config = this.configService.getOrThrow('auth', { infer: true });
+    await this.sessionsService.create(
+      sessionId,
       user.id,
       tokenHash(tokens.refreshToken),
+      new Date(Date.now() + config.refreshExpiresIn * 1000),
     );
     return { ...tokens, user: toUserProfile(user) };
   }
 
-  private async generateTokens(user: User) {
+  private async generateTokens(user: User, sessionId: string) {
     const config = this.configService.getOrThrow('auth', { infer: true });
-    const payload = { sub: user.id, email: user.email, role: user.role };
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+      sessionId,
+    };
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(
         { ...payload, type: 'access' },

@@ -1,16 +1,34 @@
-import { Controller, Get, Param, ParseUUIDPipe, Query } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { PaginationQueryDto } from '../../common/dto/pagination-query.dto';
-import { Role } from '../../generated/prisma/enums';
+import { AuditAction, Role } from '../../generated/prisma/enums';
 import { UsersService } from './users.service';
+import { UpdateUserAdminDto } from './dto/update-user-admin.dto';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
+import { JwtPayload } from '../../common/types/jwt-payload.type';
+import { AuthRequest } from '../../common/types/auth-request.type';
+import { AuditService } from '../audit/audit.service';
 
 @ApiTags('users')
 @ApiBearerAuth()
 @Roles(Role.ADMIN)
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly auditService: AuditService,
+  ) {}
 
   @Get()
   findAll(@Query() query: PaginationQueryDto) {
@@ -20,5 +38,40 @@ export class UsersController {
   @Get(':id')
   findOne(@Param('id', new ParseUUIDPipe()) id: string) {
     return this.usersService.findByIdSafe(id);
+  }
+
+  @Patch(':id')
+  async update(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateUserAdminDto,
+    @CurrentUser() actor: JwtPayload,
+    @Req() request: AuthRequest,
+  ) {
+    if (dto.role === undefined && dto.isActive === undefined) {
+      throw new BadRequestException('Informe role ou isActive');
+    }
+    const user = await this.usersService.updateAdmin(id, dto);
+    const context = {
+      actorUserId: actor.sub,
+      targetType: 'User',
+      targetId: id,
+      ipAddress: request.ip,
+      requestId: request.requestId,
+    };
+    if (dto.role !== undefined) {
+      await this.auditService.write({
+        ...context,
+        action: AuditAction.USER_ROLE_UPDATED,
+        metadata: { role: dto.role },
+      });
+    }
+    if (dto.isActive !== undefined) {
+      await this.auditService.write({
+        ...context,
+        action: AuditAction.USER_STATUS_UPDATED,
+        metadata: { isActive: dto.isActive },
+      });
+    }
+    return user;
   }
 }

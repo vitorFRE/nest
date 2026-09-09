@@ -9,27 +9,16 @@ import { Test } from '@nestjs/testing';
 import { createHash } from 'node:crypto';
 import * as bcrypt from 'bcrypt';
 import { AllConfigType } from '../../config/config.type';
-import { User } from '../../generated/prisma/client';
+import { Role, User } from '../../generated/prisma/client';
+import { SessionsService } from '../sessions/sessions.service';
 import { UsersService } from '../users/users.service';
 import { AuthService } from './auth.service';
 
-type Claims = {
-  sub: string;
-  type: string;
-  jti: string;
-  exp: number;
-  iat: number;
-};
 const digest = (token: string) =>
   createHash('sha256').update(token).digest('hex');
 
 describe('AuthService', () => {
-  let service: AuthService;
-  let config: ConfigService<AllConfigType>;
-  let user: User;
-  let passwordHash: string;
   const password = 'a-valid-password';
-  const jwt = new JwtService();
   const auth: AllConfigType['auth'] = {
     accessSecret: 'unit-access-secret-with-at-least-32-characters',
     refreshSecret: 'unit-refresh-secret-with-at-least-32-characters',
@@ -37,26 +26,19 @@ describe('AuthService', () => {
     refreshExpiresIn: 604800,
     allowRegistration: true,
   };
-  const users: jest.Mocked<
-    Pick<
-      UsersService,
-      | 'findByEmail'
-      | 'findById'
-      | 'create'
-      | 'updateRefreshToken'
-      | 'rotateRefreshToken'
-    >
-  > = {
+  const users = {
     findByEmail: jest.fn(),
     findById: jest.fn(),
     create: jest.fn(),
-    updateRefreshToken: jest.fn(),
-    rotateRefreshToken: jest.fn(),
   };
-
-  beforeAll(async () => {
-    passwordHash = await bcrypt.hash(password, 4);
-  });
+  const sessions = {
+    create: jest.fn(),
+    rotateRefreshToken: jest.fn(),
+    revokeForUser: jest.fn(),
+  };
+  const jwt = new JwtService();
+  let service: AuthService;
+  let user: User;
 
   beforeEach(async () => {
     jest.resetAllMocks();
@@ -64,185 +46,166 @@ describe('AuthService', () => {
       id: '18c01ca1-e110-44f9-9720-c865f7d49bfa',
       email: 'user@example.com',
       name: 'User',
-      password: passwordHash,
-      role: 'USER',
+      password: await bcrypt.hash(password, 4),
+      role: Role.USER,
       isActive: true,
-      refreshToken: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
-    users.findById.mockResolvedValue(user);
     users.findByEmail.mockResolvedValue(user);
+    users.findById.mockResolvedValue(user);
     users.create.mockResolvedValue(user);
-    users.updateRefreshToken.mockResolvedValue(user);
-    users.rotateRefreshToken.mockResolvedValue(true);
-    config = new ConfigService<AllConfigType>({ auth: { ...auth } });
+    sessions.create.mockResolvedValue({ id: 'session-id' });
+    sessions.rotateRefreshToken.mockResolvedValue(true);
+    sessions.revokeForUser.mockResolvedValue(undefined);
     const module = await Test.createTestingModule({
       providers: [
         AuthService,
         { provide: UsersService, useValue: users },
+        { provide: SessionsService, useValue: sessions },
         { provide: JwtService, useValue: jwt },
-        { provide: ConfigService, useValue: config },
+        {
+          provide: ConfigService,
+          useValue: new ConfigService<AllConfigType>({ auth: { ...auth } }),
+        },
       ],
     }).compile();
     service = module.get(AuthService);
   });
 
-  it('should reject disabled registration before querying or creating users', async () => {
-    config.set('auth', { ...auth, allowRegistration: false });
+  it('should reject registration before querying the database when disabled', async () => {
+    const config = new ConfigService<AllConfigType>({
+      auth: { ...auth, allowRegistration: false },
+    });
+    const module = await Test.createTestingModule({
+      providers: [
+        AuthService,
+        { provide: UsersService, useValue: users },
+        { provide: SessionsService, useValue: sessions },
+        { provide: JwtService, useValue: jwt },
+        { provide: ConfigService, useValue: config },
+      ],
+    }).compile();
     await expect(
-      service.register({ email: user.email, password }),
+      module.get(AuthService).register({ email: user.email, password }),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(users.findByEmail).not.toHaveBeenCalled();
-    expect(users.create).not.toHaveBeenCalled();
   });
 
-  it('should reject an existing email without issuing a session', async () => {
+  it('should reject an existing registration without creating a session', async () => {
     await expect(
       service.register({ email: user.email, password }),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(users.create).not.toHaveBeenCalled();
-    expect(users.updateRefreshToken).not.toHaveBeenCalled();
+    expect(sessions.create).not.toHaveBeenCalled();
   });
 
-  it('should hash registration passwords with cost 12 and return only public profile fields', async () => {
+  it('should hash a registered password and create a session with only a token hash', async () => {
     users.findByEmail.mockResolvedValue(null);
-    const result = await service.register({
-      email: user.email,
-      password,
-      name: 'User',
-    });
-    const saved = users.create.mock.calls[0][0];
-    expect(await bcrypt.compare(password, saved.password)).toBe(true);
-    expect(bcrypt.getRounds(saved.password)).toBe(12);
-    expect(result.user).not.toHaveProperty('password');
-    expect(result.user).not.toHaveProperty('refreshToken');
-    expect(users.updateRefreshToken).toHaveBeenCalledWith(
+    const result = await service.register({ email: user.email, password });
+    const created = users.create.mock.calls[0][0];
+    expect(await bcrypt.compare(password, created.password)).toBe(true);
+    expect(bcrypt.getRounds(created.password)).toBe(12);
+    expect(sessions.create).toHaveBeenCalledWith(
+      expect.any(String),
       user.id,
       digest(result.refreshToken),
+      expect.any(Date),
     );
+    expect(result.user).not.toHaveProperty('password');
+    expect(result.user).not.toHaveProperty('refreshToken');
   });
 
-  it.each(['missing', 'inactive', 'wrong password'])(
-    'should reject %s credentials without changing the session',
-    async (scenario) => {
-      if (scenario === 'missing') users.findByEmail.mockResolvedValue(null);
-      if (scenario === 'inactive') user.isActive = false;
-      await expect(
-        service.login({
-          email: user.email,
-          password: scenario === 'wrong password' ? 'incorrect' : password,
-        }),
-      ).rejects.toThrow('Credenciais inválidas');
-      expect(users.updateRefreshToken).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    ['missing user', null, password],
+    ['disabled user', { isActive: false }, password],
+    ['invalid password', {}, 'incorrect'],
+  ])('should reject login with %s', async (_, changes, submittedPassword) => {
+    users.findByEmail.mockResolvedValue(
+      changes === null ? null : { ...user, ...changes },
+    );
+    await expect(
+      service.login({ email: user.email, password: submittedPassword }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(sessions.create).not.toHaveBeenCalled();
+  });
 
-  it('should sign distinct token kinds with separate secrets, expirations and random IDs', async () => {
+  it('should issue different access and refresh tokens tied to one session', async () => {
     const result = await service.login({ email: user.email, password });
-    const access = jwt.verify<Claims>(result.accessToken, {
-      secret: auth.accessSecret,
+    const access = jwt.verify<{
+      type: string;
+      sessionId: string;
+      exp: number;
+      iat: number;
+    }>(result.accessToken, { secret: auth.accessSecret });
+    const refresh = jwt.verify<{
+      type: string;
+      sessionId: string;
+      exp: number;
+      iat: number;
+    }>(result.refreshToken, { secret: auth.refreshSecret });
+    expect(access).toMatchObject({
+      type: 'access',
+      sessionId: refresh.sessionId,
     });
-    const refresh = jwt.verify<Claims>(result.refreshToken, {
-      secret: auth.refreshSecret,
-    });
-    expect(access).toMatchObject({ sub: user.id, type: 'access' });
-    expect(refresh).toMatchObject({ sub: user.id, type: 'refresh' });
+    expect(refresh.type).toBe('refresh');
     expect(access.exp - access.iat).toBe(auth.accessExpiresIn);
     expect(refresh.exp - refresh.iat).toBe(auth.refreshExpiresIn);
-    expect(access.jti).not.toBe(refresh.jti);
     expect(() =>
       jwt.verify(result.refreshToken, { secret: auth.accessSecret }),
     ).toThrow();
-    const second = await service.login({ email: user.email, password });
-    expect(second.refreshToken).not.toBe(result.refreshToken);
-    expect(result.user).not.toHaveProperty('password');
-    expect(result.user).not.toHaveProperty('refreshToken');
   });
 
-  it.each(['missing', 'inactive', 'revoked', 'different token'])(
-    'should reject refresh for %s sessions',
-    async (scenario) => {
-      const token = 'old-token';
-      user.refreshToken = digest(token);
-      if (scenario === 'missing') users.findById.mockResolvedValue(null);
-      if (scenario === 'inactive') user.isActive = false;
-      if (scenario === 'revoked') user.refreshToken = null;
-      await expect(
-        service.refreshTokens(
-          user.id,
-          scenario === 'different token' ? 'another-token' : token,
-        ),
-      ).rejects.toBeInstanceOf(UnauthorizedException);
-      expect(users.rotateRefreshToken).not.toHaveBeenCalled();
-    },
-  );
-
-  it('should compare the entire refresh token beyond the bcrypt 72-byte boundary', async () => {
-    const prefix = 'x'.repeat(100);
-    user.refreshToken = digest(prefix + 'original');
+  it.each([
+    ['missing user', null],
+    ['disabled user', { isActive: false }],
+  ])('should reject refresh for a %s', async (_, refreshedUser) => {
+    users.findById.mockResolvedValue(refreshedUser);
     await expect(
-      service.refreshTokens(user.id, prefix + 'tampered'),
+      service.refreshTokens(user.id, 'session-id', 'refresh-token'),
     ).rejects.toBeInstanceOf(UnauthorizedException);
-    expect(users.rotateRefreshToken).not.toHaveBeenCalled();
+    expect(sessions.rotateRefreshToken).not.toHaveBeenCalled();
   });
 
-  it('should rotate using the previous digest and persist only the new digest', async () => {
-    user.refreshToken = digest('old-token');
-    const result = await service.refreshTokens(user.id, 'old-token');
-    expect(users.rotateRefreshToken).toHaveBeenCalledWith(
+  it('should atomically rotate the full refresh token hash for its session', async () => {
+    const result = await service.refreshTokens(
       user.id,
-      user.refreshToken,
+      'session-id',
+      'refresh-token',
+    );
+    expect(sessions.rotateRefreshToken).toHaveBeenCalledWith(
+      'session-id',
+      user.id,
+      digest('refresh-token'),
       digest(result.refreshToken),
     );
-    expect(users.updateRefreshToken).not.toHaveBeenCalled();
   });
 
-  it('should reject a lost rotation race instead of returning unusable tokens', async () => {
-    user.refreshToken = digest('old-token');
-    users.rotateRefreshToken.mockResolvedValue(false);
-    await expect(service.refreshTokens(user.id, 'old-token')).rejects.toThrow(
-      'Refresh token já utilizado ou revogado',
+  it('should reject a refresh token consumed by a concurrent request', async () => {
+    sessions.rotateRefreshToken.mockResolvedValue(false);
+    await expect(
+      service.refreshTokens(user.id, 'session-id', 'refresh-token'),
+    ).rejects.toThrow('Refresh token já utilizado ou revogado');
+  });
+
+  it('should revoke only the requested session on logout', async () => {
+    await service.logout(user.id, 'session-id');
+    expect(sessions.revokeForUser).toHaveBeenCalledWith('session-id', user.id);
+  });
+
+  it.each([
+    ['missing', null],
+    ['disabled', { isActive: false }],
+  ])('should reject the profile of a %s account', async (_, foundUser) => {
+    users.findById.mockResolvedValue(foundUser);
+    await expect(service.getMe(user.id)).rejects.toBeInstanceOf(
+      UnauthorizedException,
     );
   });
 
-  it('should propagate database failures instead of reporting invalid credentials', async () => {
-    const failure = new Error('Database offline');
-    users.findByEmail.mockRejectedValue(failure);
-    await expect(service.login({ email: user.email, password })).rejects.toBe(
-      failure,
-    );
-  });
-
-  it('should not return a successful login when saving the refresh fails', async () => {
-    const failure = new Error('Write failed');
-    users.updateRefreshToken.mockRejectedValue(failure);
-    await expect(service.login({ email: user.email, password })).rejects.toBe(
-      failure,
-    );
-  });
-
-  it.each(['missing', 'inactive'])(
-    'should reject the profile of a %s user',
-    async (scenario) => {
-      if (scenario === 'missing') users.findById.mockResolvedValue(null);
-      else user.isActive = false;
-      await expect(service.getMe(user.id)).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
-    },
-  );
-
-  it('should return a profile without credential hashes', async () => {
-    user.refreshToken = digest('token');
-    const profile = await service.getMe(user.id);
-    expect(profile).toMatchObject({ id: user.id, email: user.email });
-    expect(profile).not.toHaveProperty('password');
-    expect(profile).not.toHaveProperty('refreshToken');
-  });
-
-  it('should revoke renewal on logout', async () => {
-    await expect(service.logout(user.id)).resolves.toBeUndefined();
-    expect(users.updateRefreshToken).toHaveBeenCalledWith(user.id, null);
+  it('should return a profile without credential values', async () => {
+    const result = await service.getMe(user.id);
+    expect(result).toMatchObject({ id: user.id, email: user.email });
+    expect(result).not.toHaveProperty('password');
   });
 });

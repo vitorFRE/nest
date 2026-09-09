@@ -5,6 +5,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import { AllConfigType } from '../../config/config.type';
 import { UsersService } from '../../modules/users/users.service';
+import { SessionsService } from '../../modules/sessions/sessions.service';
 import { AuthRequest } from '../types/auth-request.type';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
@@ -13,6 +14,7 @@ describe('JwtAuthGuard', () => {
   const jwt = new JwtService();
   const reflector = { getAllAndOverride: jest.fn() };
   const users = { findById: jest.fn() };
+  const sessions = { isActive: jest.fn() };
   let guard: JwtAuthGuard;
   let request: AuthRequest;
   let context: ExecutionContext;
@@ -20,6 +22,7 @@ describe('JwtAuthGuard', () => {
   beforeEach(async () => {
     jest.resetAllMocks();
     request = { headers: {} } as AuthRequest;
+    sessions.isActive.mockResolvedValue(true);
     context = {
       switchToHttp: () => ({ getRequest: () => request }),
       getClass: jest.fn(),
@@ -29,6 +32,7 @@ describe('JwtAuthGuard', () => {
       providers: [
         JwtAuthGuard,
         { provide: UsersService, useValue: users },
+        { provide: SessionsService, useValue: sessions },
         { provide: Reflector, useValue: reflector },
         { provide: JwtService, useValue: jwt },
         {
@@ -49,6 +53,7 @@ describe('JwtAuthGuard', () => {
         type: 'access',
         role: 'ADMIN',
         email: 'old@example.com',
+        sessionId: 'session-id',
       },
       { secret, expiresIn: 60 },
     );
@@ -94,7 +99,6 @@ describe('JwtAuthGuard', () => {
       role: 'USER',
       isActive: true,
       password: 'sensitive',
-      refreshToken: 'sensitive',
     });
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(request.user).toEqual({
@@ -102,7 +106,22 @@ describe('JwtAuthGuard', () => {
       email: 'new@example.com',
       role: 'USER',
       type: 'access',
+      sessionId: 'session-id',
     });
+  });
+
+  it('should reject an access token whose session has been revoked', async () => {
+    request.headers.authorization = 'Bearer ' + access();
+    users.findById.mockResolvedValue({
+      id: 'user-id',
+      email: 'user@example.com',
+      role: 'USER',
+      isActive: true,
+    });
+    sessions.isActive.mockResolvedValue(false);
+    await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
   });
 
   it('should propagate database failures rather than misclassifying them as invalid JWTs', async () => {

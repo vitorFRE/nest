@@ -36,8 +36,10 @@ src/
   config/            # configuração tipada e validada na inicialização
   modules/
     auth/            # cadastro, login, refresh, logout e perfil
+    audit/           # consulta e gravação de eventos administrativos
     health/          # liveness e readiness
     prisma/          # conexão e ciclo de vida do Prisma
+    sessions/        # sessões e revogação por dispositivo
     users/           # persistência e consultas administrativas
   prisma/            # schema e migrations versionadas
   generated/prisma/  # gerado automaticamente; não editar/versionar
@@ -59,17 +61,40 @@ O prefixo padrão é `/api`:
 - `POST /api/auth/refresh`: envie o **refresh token** em `Authorization: Bearer <refreshToken>`; responde com dois tokens novos.
 - `GET /api/auth/me`: envie o **access token** em `Authorization: Bearer <accessToken>`; retorna o perfil.
 - `POST /api/auth/logout`: usa access token; responde 204 e revoga a renovação da sessão.
+- `GET /api/auth/sessions`: lista as sessões ativas da própria conta e marca a atual com `isCurrent`.
+- `DELETE /api/auth/sessions/:id`: revoga uma sessão da própria conta, inclusive a atual; responde 204.
 - `GET /api/users?page=1&limit=20` e `GET /api/users/:id`: exigem `ADMIN`, retornam apenas campos públicos. Limite máximo: 100.
+- `PATCH /api/users/:id`: exige `ADMIN`; aceita `role` e/ou `isActive` para administrar uma conta.
 
 No Swagger, há autorizações separadas para access token e refresh token.
 
-O modelo mantém **um refresh token ativo por usuário**, como no Sellow. Novo login substitui a renovação anterior. Cada token inclui um identificador aleatório; o refresh é armazenado como SHA-256 do JWT completo e trocado atomicamente. Duas renovações simultâneas com o mesmo token produzem um sucesso e um 401. No frontend, serialize a renovação e substitua os dois tokens após o sucesso.
+Cada login ou cadastro cria uma **sessão independente por dispositivo**. Os access e refresh tokens carregam o ID da sessão; o refresh é armazenado somente como SHA-256 do JWT completo e é trocado atomicamente. Duas renovações simultâneas com o mesmo token produzem um sucesso e um 401. No frontend, serialize a renovação e substitua os dois tokens após o sucesso.
 
 Senhas usam bcrypt com custo 12, mínimo de 8 caracteres no cadastro e máximo de 72 bytes UTF-8. Emails são normalizados para minúsculas, e a restrição única também protege cadastros concorrentes. Campos como `role`, `isActive` e `refreshToken` não são aceitos nos DTOs públicos.
 
-Logout revoga o refresh. Access tokens já emitidos continuam válidos até expirar, desde que a conta exista e esteja ativa. Para revogação imediata por sessão ou múltiplos dispositivos, evolua para uma tabela `Session`; o template atual usa a semântica do Sellow.
+Logout ou revogação por dispositivo invalidam imediatamente access e refresh tokens daquela sessão. Os guards também verificam o usuário no banco, portanto desativação, exclusão e mudança de papel têm efeito imediato.
 
-O cadastro sempre cria `USER`. Para desenvolvimento, cadastre uma conta e altere seu `role` para `ADMIN` no `pnpm prisma:studio`. Em produção, faça o provisionamento administrativo por um procedimento controlado do projeto; não há promoção pública nem credencial padrão.
+O cadastro sempre cria `USER`. Não há promoção pública nem credencial padrão. Crie ou promova o primeiro administrador por um processo controlado:
+
+```sh
+ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='uma-senha-segura' pnpm users:create-admin
+```
+
+No PowerShell:
+
+```powershell
+$env:ADMIN_EMAIL = 'admin@example.com'
+$env:ADMIN_PASSWORD = 'uma-senha-segura'
+pnpm users:create-admin
+```
+
+`ADMIN_NAME` é opcional. O comando exige senha de 8 a 72 bytes, cria o usuário como `ADMIN` ativo ou promove uma conta existente, sem alterar a senha já existente. Ele também registra o evento de provisionamento na auditoria. Nunca salve essas variáveis em `.env` ou no repositório.
+
+## Auditoria
+
+`GET /api/audit-logs` exige `ADMIN` e retorna eventos paginados. Aceita `page`, `limit`, `actorUserId`, `action`, `targetType`, `targetId`, `createdAfter` e `createdBefore`.
+
+O template registra provisionamento de administradores, revogação de sessão, alteração de papel e ativação/desativação de usuário. Cada evento inclui o ator quando houver, alvo, IP, `X-Request-Id`, data e metadados. Senhas, tokens, segredos, cookies e hashes são removidos dos metadados antes de persistir.
 
 Workspaces, leads, integrações Apify e outros domínios do Sellow não fazem parte desta base. Recuperação de senha, confirmação de email e login social podem ser adicionados como módulos conforme a necessidade.
 
@@ -103,6 +128,8 @@ pnpm prisma:generate
 ```
 
 Versione o schema e o SQL gerado em `src/prisma/migrations`. Para aplicar migrations já existentes a um SQLite novo, use `pnpm prisma:migrate:deploy`. Os scripts inicializam o arquivo SQLite preservando bancos existentes, evitando o erro vazio de criação do engine observado no Windows. Execute os scripts a partir da raiz.
+
+A migration `20260909173427_sessions_and_audit` remove o antigo campo `User.refreshToken`. Ao aplicá-la, refresh tokens emitidos pelo modelo anterior deixam de funcionar e os usuários devem entrar novamente. Faça esse deploy em uma janela comunicada aos usuários.
 
 **`prisma:migrate:deploy` atua no SQLite local, inclusive quando `NODE_ENV=production`.** Ele não migra Turso. A aplicação e o CLI têm alvos distintos por escolha explícita, como no Sellow.
 
@@ -139,11 +166,11 @@ pnpm check
 pnpm format:check
 ```
 
-`check` executa lint, checagem de tipos, testes unitários, testes de integração com SQLite real e build. Os testes de integração criam um banco temporário por execução, aplicam as migrations versionadas e removem o banco após o processo terminar, sem usar `dev.db` nem credenciais Turso.
+`check` executa lint, checagem de tipos, testes unitários com cobertura mínima, testes de integração com SQLite real e build. A cobertura global não pode cair abaixo de 45% de linhas e statements, 50% de funções e 65% de ramificações. Esses limites refletem a base inicial; aumente-os ao adicionar testes aos módulos novos. Os testes de integração criam um banco temporário por execução, aplicam as migrations versionadas e removem o banco após o processo terminar, sem usar `dev.db` nem credenciais Turso.
 
 Os testes unitários ficam junto do código em arquivos `*.spec.ts`: `auth.service.spec.ts`, `users.service.spec.ts`, `health.controller.spec.ts`, os guards de access/refresh e permissões, e a configuração. Eles isolam dependências para verificar regras, recusas de acesso e falhas de persistência. Os testes em `test/app.e2e-spec.ts` exercitam as rotas HTTP, a composição dos módulos e o Prisma com SQLite real.
 
-Execute `pnpm test --runInBand` para os unitários, `pnpm test -- auth.service` para filtrar um módulo, ou `pnpm test:e2e` para a integração. Novas regras de negócio devem receber testes próximos ao service correspondente.
+Execute `pnpm test --runInBand` para os unitários, `pnpm test:coverage -- --runInBand` para aplicar a cobertura, `pnpm test -- auth.service` para filtrar um módulo, ou `pnpm test:e2e` para a integração. Novas regras de negócio devem receber testes próximos ao service correspondente.
 
 O workflow de CI executa no Linux com Node 24. Execute `pnpm lint:fix` e `pnpm format` para ajustes automáticos.
 

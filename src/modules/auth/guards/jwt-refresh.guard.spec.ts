@@ -37,6 +37,7 @@ describe('JwtRefreshGuard', () => {
     { sub: 'user-id', type: 'access' },
     { sub: '', type: 'refresh' },
     { type: 'refresh' },
+    { sub: 'user-id', type: 'refresh' },
   ])('should reject invalid refresh claims: %j', async (payload) => {
     request.headers.authorization = `Bearer ${jwt.sign(payload, { secret })}`;
     await expect(guard.canActivate(context)).rejects.toBeInstanceOf(
@@ -49,7 +50,7 @@ describe('JwtRefreshGuard', () => {
     'should reject a token with %s',
     async (scenario) => {
       const token = jwt.sign(
-        { sub: 'user-id', type: 'refresh' },
+        { sub: 'user-id', type: 'refresh', sessionId: 'session-id' },
         {
           secret: scenario === 'wrong secret' ? 'another-secret' : secret,
           expiresIn: scenario === 'expired' ? -1 : 60,
@@ -69,6 +70,7 @@ describe('JwtRefreshGuard', () => {
         type: 'refresh',
         role: 'USER',
         email: 'user@example.com',
+        sessionId: 'session-id',
       },
       { secret, expiresIn: 60 },
     );

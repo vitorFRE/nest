@@ -6,6 +6,8 @@ import configuration from './config/configuration';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { AuthModule } from './modules/auth/auth.module';
 import { HealthModule } from './modules/health/health.module';
+import { AuditModule } from './modules/audit/audit.module';
+import { SessionsModule } from './modules/sessions/sessions.module';
 
 @Module({
   imports: [
@@ -15,6 +17,8 @@ import { HealthModule } from './modules/health/health.module';
       load: [configuration],
     }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 100 }]),
+    AuditModule,
+    SessionsModule,
     AuthModule,
     HealthModule,
   ],

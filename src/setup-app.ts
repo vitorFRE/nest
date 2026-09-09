@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import { AllConfigType } from './config/config.type';
+import { AuthRequest } from './common/types/auth-request.type';
 import { validationOptions } from './common/utils/validation-options';
 
 export function configureApp(app: NestExpressApplication) {
@@ -17,6 +18,7 @@ export function configureApp(app: NestExpressApplication) {
   app.use(helmet());
   app.use((req: Request, res: Response, next: NextFunction) => {
     const requestId = randomUUID();
+    (req as AuthRequest).requestId = requestId;
     res.setHeader('X-Request-Id', requestId);
     const startedAt = performance.now();
     res.on('finish', () =>
