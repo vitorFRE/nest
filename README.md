@@ -145,11 +145,11 @@ Os testes unitários ficam junto do código em arquivos `*.spec.ts`: `auth.servi
 
 Execute `pnpm test --runInBand` para os unitários, `pnpm test -- auth.service` para filtrar um módulo, ou `pnpm test:e2e` para a integração. Novas regras de negócio devem receber testes próximos ao service correspondente.
 
-O workflow de CI inclui Windows e Linux com Node 24. Execute `pnpm lint:fix` e `pnpm format` para ajustes automáticos.
+O workflow de CI executa no Linux com Node 24. Execute `pnpm lint:fix` e `pnpm format` para ajustes automáticos.
 
 ### O que a CI faz
 
-O arquivo `.github/workflows/ci.yml` configura a integração contínua (CI) no GitHub Actions. Em cada push ou pull request, o GitHub instala as dependências pelo lockfile e executa formatação, lint, tipos, testes e build em Windows e Linux. Isso ajuda a identificar uma alteração que quebrou o projeto antes de integrá-la ao trabalho da equipe. Para impedir merges quando a verificação falhar, configure os checks como obrigatórios nas regras de proteção da branch do repositório.
+O arquivo `.github/workflows/ci.yml` configura a integração contínua (CI) no GitHub Actions. Em cada push ou pull request, o GitHub instala as dependências pelo lockfile e executa formatação, lint, tipos, testes e build no Linux. Isso ajuda a identificar uma alteração que quebrou o projeto antes de integrá-la ao trabalho da equipe. Para impedir merges quando a verificação falhar, configure os checks como obrigatórios nas regras de proteção da branch do repositório.
 
 Este workflow faz somente CI. Entrega/deploy contínuo (CD) seria uma etapa adicional para publicar uma versão no servidor ou plataforma escolhida. O template não contém deploy automático, não publica a API e não aplica migrations ao Turso. O workflow passa a executar quando o projeto é enviado a um repositório GitHub com Actions habilitado; localmente, o equivalente é `pnpm check`.
 
