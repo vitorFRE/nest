@@ -57,8 +57,8 @@ Todas as rotas novas são protegidas automaticamente. Use `@Public()` para liber
 
 O prefixo padrão é `/api`:
 
-- `POST /api/auth/register`: `{ "email": "user@example.com", "password": "uma-senha-segura", "name": "Nome" }`; responde 201 com `accessToken`, `refreshToken` e `user`.
-- `POST /api/auth/login`: `{ "email": "user@example.com", "password": "uma-senha-segura" }`; responde 200 no mesmo formato.
+- `POST /api/auth/register`: `{ "email": "user@example.com", "password": "uma-senha-segura1", "name": "Nome" }`; responde 201 com `accessToken`, `refreshToken` e `user`.
+- `POST /api/auth/login`: `{ "email": "user@example.com", "password": "uma-senha-segura1" }`; responde 200 no mesmo formato.
 - `POST /api/auth/refresh`: envie o **refresh token** em `Authorization: Bearer <refreshToken>`; responde com dois tokens novos.
 - `GET /api/auth/me`: envie o **access token** em `Authorization: Bearer <accessToken>`; retorna o perfil.
 - `POST /api/auth/logout`: usa access token; responde 204 e revoga a renovação da sessão.
@@ -69,27 +69,27 @@ O prefixo padrão é `/api`:
 
 No Swagger, há autorizações separadas para access token e refresh token.
 
-Cada login ou cadastro cria uma **sessão independente por dispositivo**. Os access e refresh tokens carregam o ID da sessão; o refresh é armazenado somente como SHA-256 do JWT completo e é trocado atomicamente. Duas renovações simultâneas com o mesmo token produzem um sucesso e um 401. No frontend, serialize a renovação e substitua os dois tokens após o sucesso.
+Cada login ou cadastro cria uma **sessão independente por dispositivo**. Os access e refresh tokens carregam o ID da sessão; o refresh é armazenado somente como SHA-256 do JWT completo e é trocado atomicamente. Duas renovações simultâneas com o mesmo token produzem um sucesso e um 401 (janela de graça de 5s para corrida). Reutilizar um refresh já rotacionado **fora** dessa janela revoga a sessão e registra `SESSION_REVOKED` com `reason: refresh_reuse`. No frontend, serialize a renovação e substitua os dois tokens após o sucesso.
 
-Senhas usam bcrypt com custo 12, mínimo de 8 caracteres no cadastro e máximo de 72 bytes UTF-8. Emails são normalizados para minúsculas, e a restrição única também protege cadastros concorrentes. Campos como `role`, `isActive` e `refreshToken` não são aceitos nos DTOs públicos.
+Senhas usam bcrypt com custo 12, mínimo de 8 caracteres, máximo de 72 bytes UTF-8 e pelo menos uma letra e um dígito. Emails são normalizados para minúsculas. Cadastro com email já existente responde 400 com mensagem genérica (`Não foi possível concluir o cadastro`), sem revelar se o email existe. A restrição única também protege cadastros concorrentes. Campos como `role`, `isActive` e `refreshToken` não são aceitos nos DTOs públicos.
 
-Logout ou revogação por dispositivo invalidam imediatamente access e refresh tokens daquela sessão. Os guards também verificam o usuário no banco, portanto desativação, exclusão e mudança de papel têm efeito imediato.
+Logout ou revogação por dispositivo invalidam imediatamente access e refresh tokens daquela sessão. Os guards também verificam o usuário no banco, portanto desativação, exclusão e mudança de papel têm efeito imediato. `PATCH /api/users/:id` não permite demotar ou desativar o último `ADMIN` ativo.
 
 O cadastro sempre cria `USER`. Não há promoção pública nem credencial padrão. Crie ou promova o primeiro administrador por um processo controlado:
 
 ```sh
-ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='uma-senha-segura' pnpm users:create-admin
+ADMIN_EMAIL=admin@example.com ADMIN_PASSWORD='uma-senha-segura1' pnpm users:create-admin
 ```
 
 No PowerShell:
 
 ```powershell
 $env:ADMIN_EMAIL = 'admin@example.com'
-$env:ADMIN_PASSWORD = 'uma-senha-segura'
+$env:ADMIN_PASSWORD = 'uma-senha-segura1'
 pnpm users:create-admin
 ```
 
-`ADMIN_NAME` é opcional. O comando exige senha de 8 a 72 bytes, cria o usuário como `ADMIN` ativo ou promove uma conta existente, sem alterar a senha já existente. Ele também registra o evento de provisionamento na auditoria. Nunca salve essas variáveis em `.env` ou no repositório.
+`ADMIN_NAME` é opcional. O comando exige a mesma política de senha do cadastro, cria o usuário como `ADMIN` ativo ou promove uma conta existente, sem alterar a senha já existente. Ele também registra o evento de provisionamento na auditoria. Nunca salve essas variáveis em `.env` ou no repositório.
 
 ## Auditoria
 
@@ -124,7 +124,7 @@ Veja `.env.example`. Valores inválidos interrompem a inicialização sem imprim
 - `SWAGGER_ENABLED`: quando omitido, habilitado fora de produção. Se habilitado, `/docs` e `/docs-json` ficam públicos.
 - `TRUST_PROXY_HOPS`: padrão 0. Configure o número exato de proxies confiáveis da infraestrutura para que o limite por IP funcione corretamente.
 
-Helmet habilita cabeçalhos de segurança. O limite global é de 100 requisições por minuto, por IP e rota; login usa 10/min e cadastro 5/min. Health checks não são limitados. O armazenamento do limitador é em memória: para múltiplas réplicas, use armazenamento compartilhado ou aplique o limite no gateway.
+Helmet habilita cabeçalhos de segurança. O limite global é de 100 requisições por minuto, por IP e rota; login usa 10/min, cadastro 5/min e refresh 20/min. Health checks não são limitados. O armazenamento do limitador é em memória: para múltiplas réplicas, use armazenamento compartilhado ou aplique o limite no gateway.
 
 Cada resposta recebe `X-Request-Id`; os logs HTTP incluem método, caminho sem query string, status e duração. Erros seguem `{ statusCode, message, error, path, requestId, timestamp }`. Falhas internas retornam mensagem genérica. Senhas e tokens não aparecem no perfil nem nos logs HTTP.
 

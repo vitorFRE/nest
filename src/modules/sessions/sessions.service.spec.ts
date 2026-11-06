@@ -10,6 +10,7 @@ describe('SessionsService', () => {
       count: jest.fn(),
       updateMany: jest.fn(),
       findMany: jest.fn(),
+      findFirst: jest.fn(),
     },
   };
   let service: SessionsService;
@@ -126,5 +127,49 @@ describe('SessionsService', () => {
     await expect(
       service.revokeForUser('session-id', 'user-id'),
     ).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('should treat a missing or matching-hash session as inactive for reuse checks', async () => {
+    prisma.session.findFirst.mockResolvedValue(null);
+    await expect(
+      service.revokeIfRefreshReuse('session-id', 'user-id', 'stale'),
+    ).resolves.toBe('inactive');
+    prisma.session.findFirst.mockResolvedValue({
+      id: 'session-id',
+      refreshTokenHash: 'stale',
+      updatedAt: new Date(Date.now() - 60_000),
+    });
+    await expect(
+      service.revokeIfRefreshReuse('session-id', 'user-id', 'stale'),
+    ).resolves.toBe('inactive');
+    expect(prisma.session.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('should treat a recent hash mismatch as a concurrent race', async () => {
+    prisma.session.findFirst.mockResolvedValue({
+      id: 'session-id',
+      refreshTokenHash: 'current',
+      updatedAt: new Date(),
+    });
+    await expect(
+      service.revokeIfRefreshReuse('session-id', 'user-id', 'stale'),
+    ).resolves.toBe('race');
+    expect(prisma.session.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('should revoke the session when a stale refresh is presented after the grace window', async () => {
+    prisma.session.findFirst.mockResolvedValue({
+      id: 'session-id',
+      refreshTokenHash: 'current',
+      updatedAt: new Date(Date.now() - 10_000),
+    });
+    prisma.session.updateMany.mockResolvedValue({ count: 1 });
+    await expect(
+      service.revokeIfRefreshReuse('session-id', 'user-id', 'stale'),
+    ).resolves.toBe('reuse');
+    expect(prisma.session.updateMany).toHaveBeenCalledWith({
+      where: { id: 'session-id', userId: 'user-id', revokedAt: null },
+      data: { revokedAt: expect.any(Date) },
+    });
   });
 });

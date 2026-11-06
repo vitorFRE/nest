@@ -1,5 +1,5 @@
 import {
-  ConflictException,
+  BadRequestException,
   ForbiddenException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -18,7 +18,7 @@ const digest = (token: string) =>
   createHash('sha256').update(token).digest('hex');
 
 describe('AuthService', () => {
-  const password = 'a-valid-password';
+  const password = 'a-valid-password1';
   const auth: AllConfigType['auth'] = {
     accessSecret: 'unit-access-secret-with-at-least-32-characters',
     refreshSecret: 'unit-refresh-secret-with-at-least-32-characters',
@@ -35,6 +35,7 @@ describe('AuthService', () => {
     create: jest.fn(),
     rotateRefreshToken: jest.fn(),
     revokeForUser: jest.fn(),
+    revokeIfRefreshReuse: jest.fn(),
   };
   const jwt = new JwtService();
   let service: AuthService;
@@ -58,6 +59,7 @@ describe('AuthService', () => {
     sessions.create.mockResolvedValue({ id: 'session-id' });
     sessions.rotateRefreshToken.mockResolvedValue(true);
     sessions.revokeForUser.mockResolvedValue(undefined);
+    sessions.revokeIfRefreshReuse.mockResolvedValue('race');
     const module = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -95,7 +97,7 @@ describe('AuthService', () => {
   it('should reject an existing registration without creating a session', async () => {
     await expect(
       service.register({ email: user.email, password }),
-    ).rejects.toBeInstanceOf(ConflictException);
+    ).rejects.toBeInstanceOf(BadRequestException);
     expect(users.create).not.toHaveBeenCalled();
     expect(sessions.create).not.toHaveBeenCalled();
   });
@@ -163,7 +165,7 @@ describe('AuthService', () => {
     users.findById.mockResolvedValue(refreshedUser);
     await expect(
       service.refreshTokens(user.id, 'session-id', 'refresh-token'),
-    ).rejects.toBeInstanceOf(UnauthorizedException);
+    ).resolves.toEqual({ status: 'rejected' });
     expect(sessions.rotateRefreshToken).not.toHaveBeenCalled();
   });
 
@@ -173,6 +175,8 @@ describe('AuthService', () => {
       'session-id',
       'refresh-token',
     );
+    expect(result.status).toBe('ok');
+    if (result.status !== 'ok') return;
     expect(sessions.rotateRefreshToken).toHaveBeenCalledWith(
       'session-id',
       user.id,
@@ -181,11 +185,25 @@ describe('AuthService', () => {
     );
   });
 
-  it('should reject a refresh token consumed by a concurrent request', async () => {
+  it('should treat a concurrent refresh as a race without reuse revocation', async () => {
     sessions.rotateRefreshToken.mockResolvedValue(false);
+    sessions.revokeIfRefreshReuse.mockResolvedValue('race');
     await expect(
       service.refreshTokens(user.id, 'session-id', 'refresh-token'),
-    ).rejects.toThrow('Refresh token já utilizado ou revogado');
+    ).resolves.toEqual({ status: 'rejected' });
+    expect(sessions.revokeIfRefreshReuse).toHaveBeenCalledWith(
+      'session-id',
+      user.id,
+      digest('refresh-token'),
+    );
+  });
+
+  it('should signal refresh token reuse after the grace window', async () => {
+    sessions.rotateRefreshToken.mockResolvedValue(false);
+    sessions.revokeIfRefreshReuse.mockResolvedValue('reuse');
+    await expect(
+      service.refreshTokens(user.id, 'session-id', 'refresh-token'),
+    ).resolves.toEqual({ status: 'reuse', sessionId: 'session-id' });
   });
 
   it('should revoke only the requested session on logout', async () => {

@@ -8,6 +8,11 @@ const sessionSelect = {
   expiresAt: true,
 };
 
+/** Concurrent refresh race window; clients must serialize renewal. */
+export const REFRESH_REUSE_GRACE_MS = 5_000;
+
+export type RefreshReuseOutcome = 'race' | 'reuse' | 'inactive';
+
 @Injectable()
 export class SessionsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -48,6 +53,38 @@ export class SessionsService {
       data: { refreshTokenHash: nextHash },
     });
     return result.count === 1;
+  }
+
+  /**
+   * After a failed atomic rotation: revoke the session when a valid JWT
+   * presents a stale hash outside the concurrent-refresh grace window.
+   */
+  async revokeIfRefreshReuse(
+    id: string,
+    userId: string,
+    presentedHash: string,
+    graceMs = REFRESH_REUSE_GRACE_MS,
+  ): Promise<RefreshReuseOutcome> {
+    const session = await this.prisma.session.findFirst({
+      where: {
+        id,
+        userId,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      select: { id: true, refreshTokenHash: true, updatedAt: true },
+    });
+    if (!session || session.refreshTokenHash === presentedHash) {
+      return 'inactive';
+    }
+    if (Date.now() - session.updatedAt.getTime() <= graceMs) {
+      return 'race';
+    }
+    const result = await this.prisma.session.updateMany({
+      where: { id, userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return result.count === 1 ? 'reuse' : 'inactive';
   }
 
   findAllForUser(userId: string) {

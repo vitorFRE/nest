@@ -1,6 +1,7 @@
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { Prisma } from '../../generated/prisma/client';
+import { Role } from '../../generated/prisma/enums';
 import { PrismaService } from '../prisma/prisma.service';
 import { UsersService } from './users.service';
 
@@ -36,7 +37,7 @@ describe('UsersService', () => {
     });
   });
 
-  it('should translate a concurrent unique email violation into a conflict', async () => {
+  it('should translate a concurrent unique email violation into a generic bad request', async () => {
     prisma.user.create.mockRejectedValue(
       new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
         code: 'P2002',
@@ -45,7 +46,7 @@ describe('UsersService', () => {
     );
     await expect(
       service.create({ email: 'user@example.com', password: 'hash' }),
-    ).rejects.toBeInstanceOf(ConflictException);
+    ).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it('should preserve unrelated database failures', async () => {
@@ -115,30 +116,67 @@ describe('UsersService', () => {
   });
 
   it('should update only allowed administrative user fields with the public select', async () => {
-    const profile = { id: 'user-id', role: 'ADMIN', isActive: false };
+    const profile = { id: 'user-id', role: 'SUPPORT', isActive: true };
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'user-id',
+      role: Role.USER,
+      isActive: true,
+    });
     prisma.user.update.mockResolvedValue(profile);
     await expect(
-      service.updateAdmin('user-id', { role: 'ADMIN', isActive: false }),
+      service.updateAdmin('user-id', { role: Role.SUPPORT }),
     ).resolves.toEqual(profile);
     const args = prisma.user.update.mock.calls[0][0] as {
       select: Record<string, boolean>;
     };
     expect(args).toMatchObject({
       where: { id: 'user-id' },
-      data: { role: 'ADMIN', isActive: false },
+      data: { role: Role.SUPPORT },
     });
     expect(args.select.password).not.toBe(true);
   });
 
-  it('should translate a missing user during administrative update to 404', async () => {
-    prisma.user.update.mockRejectedValue(
-      new Prisma.PrismaClientKnownRequestError('Missing record', {
-        code: 'P2025',
-        clientVersion: '7.5.0',
-      }),
-    );
+  it('should block demoting or disabling the last active administrator', async () => {
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'admin-id',
+      role: Role.ADMIN,
+      isActive: true,
+    });
+    prisma.user.count.mockResolvedValue(0);
     await expect(
-      service.updateAdmin('missing', { role: 'ADMIN' }),
+      service.updateAdmin('admin-id', { role: Role.USER }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.updateAdmin('admin-id', { isActive: false }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.user.update).not.toHaveBeenCalled();
+  });
+
+  it('should allow demoting an admin when another active admin remains', async () => {
+    const profile = { id: 'admin-id', role: Role.USER, isActive: true };
+    prisma.user.findUnique.mockResolvedValue({
+      id: 'admin-id',
+      role: Role.ADMIN,
+      isActive: true,
+    });
+    prisma.user.count.mockResolvedValue(1);
+    prisma.user.update.mockResolvedValue(profile);
+    await expect(
+      service.updateAdmin('admin-id', { role: Role.USER }),
+    ).resolves.toEqual(profile);
+    expect(prisma.user.count).toHaveBeenCalledWith({
+      where: {
+        id: { not: 'admin-id' },
+        role: Role.ADMIN,
+        isActive: true,
+      },
+    });
+  });
+
+  it('should translate a missing user during administrative update to 404', async () => {
+    prisma.user.findUnique.mockResolvedValue(null);
+    await expect(
+      service.updateAdmin('missing', { role: Role.ADMIN }),
     ).rejects.toBeInstanceOf(NotFoundException);
   });
 });

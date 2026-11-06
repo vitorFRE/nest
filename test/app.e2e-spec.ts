@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import { ThrottlerStorage } from '@nestjs/throttler';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import * as bcrypt from 'bcrypt';
@@ -23,7 +24,7 @@ describe('API with real SQLite', () => {
   let config: ConfigService<AllConfigType>;
   let session: Session;
   const email = 'user@example.com';
-  const password = 'a-strong-test-password';
+  const password = 'a-strong-test-password1';
 
   beforeAll(async () => {
     execFileSync(
@@ -67,10 +68,14 @@ describe('API with real SQLite', () => {
     expect(response.headers['x-request-id']).toBe(response.body.requestId);
   });
 
-  it('should reject extra privileges and passwords exceeding 72 UTF-8 bytes', async () => {
+  it('should reject extra privileges, weak passwords and passwords exceeding 72 UTF-8 bytes', async () => {
     await request(app.getHttpServer())
       .post('/api/auth/register')
       .send({ email, password, role: 'ADMIN' })
+      .expect(400);
+    await request(app.getHttpServer())
+      .post('/api/auth/register')
+      .send({ email, password: 'abcdefgh' })
       .expect(400);
     await request(app.getHttpServer())
       .post('/api/auth/register')
@@ -94,10 +99,11 @@ describe('API with real SQLite', () => {
     });
     expect(storedSession.refreshTokenHash).toMatch(/^[a-f0-9]{64}$/);
     expect(storedSession.refreshTokenHash).not.toBe(session.refreshToken);
-    await request(app.getHttpServer())
+    const duplicate = await request(app.getHttpServer())
       .post('/api/auth/register')
       .send({ email: email.toUpperCase(), password })
-      .expect(409);
+      .expect(400);
+    expect(duplicate.body.message).toBe('Não foi possível concluir o cadastro');
   });
 
   it('should return the profile and enforce roles from the database', async () => {
@@ -224,6 +230,48 @@ describe('API with real SQLite', () => {
       .post('/api/auth/refresh')
       .set('Authorization', `Bearer ${previous}`)
       .expect(401);
+    const stillValid = await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .set('Authorization', `Bearer ${session.refreshToken}`)
+      .expect(200);
+    session = { ...session, ...stillValid.body };
+  });
+
+  it('should revoke the session when a stale refresh is reused after the grace window', async () => {
+    const previous = session.refreshToken;
+    const claims = new JwtService().decode(session.accessToken) as {
+      sessionId: string;
+    };
+    const rotated = await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .set('Authorization', `Bearer ${previous}`)
+      .expect(200);
+    session = { ...session, ...rotated.body };
+    await prisma.session.update({
+      where: { id: claims.sessionId },
+      data: { updatedAt: new Date(Date.now() - 10_000) },
+    });
+    await request(app.getHttpServer())
+      .post('/api/auth/refresh')
+      .set('Authorization', `Bearer ${previous}`)
+      .expect(401);
+    const stored = await prisma.session.findUniqueOrThrow({
+      where: { id: claims.sessionId },
+    });
+    expect(stored.revokedAt).not.toBeNull();
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: 'SESSION_REVOKED', targetId: claims.sessionId },
+    });
+    expect(audit.metadata).toBe('{"reason":"refresh_reuse"}');
+    await request(app.getHttpServer())
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${session.accessToken}`)
+      .expect(401);
+    const restored = await request(app.getHttpServer())
+      .post('/api/auth/login')
+      .send({ email, password })
+      .expect(200);
+    session = restored.body as Session;
   });
 
   it('should list and revoke another device session immediately', async () => {
@@ -271,7 +319,7 @@ describe('API with real SQLite', () => {
     const target = await prisma.user.create({
       data: {
         email: 'managed-user@example.com',
-        password: await bcrypt.hash('managed-user-password', 4),
+        password: await bcrypt.hash('managed-user-password1', 4),
       },
     });
     await prisma.user.update({
@@ -279,6 +327,11 @@ describe('API with real SQLite', () => {
       data: { role: 'ADMIN' },
     });
     const auth = 'Bearer ' + session.accessToken;
+    await request(app.getHttpServer())
+      .patch('/api/users/' + session.user.id)
+      .set('Authorization', auth)
+      .send({ role: 'USER' })
+      .expect(400);
     await request(app.getHttpServer())
       .patch('/api/users/' + target.id)
       .set('Authorization', auth)
@@ -362,6 +415,10 @@ describe('API with real SQLite', () => {
   });
 
   it('should honor the registration switch even outside production', async () => {
+    const storage = app.get(ThrottlerStorage) as {
+      storage?: Map<string, unknown>;
+    };
+    storage.storage?.clear();
     config.set('auth', {
       ...config.getOrThrow('auth', { infer: true }),
       allowRegistration: false,

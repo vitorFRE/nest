@@ -1,5 +1,5 @@
 import {
-  ConflictException,
+  BadRequestException,
   ForbiddenException,
   Injectable,
   UnauthorizedException,
@@ -20,6 +20,11 @@ import { RegisterDto } from './dto/register.dto';
 const tokenHash = (token: string) =>
   createHash('sha256').update(token).digest('hex');
 
+export type RefreshTokensResult =
+  | { status: 'ok'; accessToken: string; refreshToken: string }
+  | { status: 'rejected' }
+  | { status: 'reuse'; sessionId: string };
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -35,8 +40,9 @@ export class AuthService {
     ) {
       throw new ForbiddenException('Registro desabilitado');
     }
-    if (await this.usersService.findByEmail(dto.email))
-      throw new ConflictException('Email já está em uso');
+    if (await this.usersService.findByEmail(dto.email)) {
+      throw new BadRequestException('Não foi possível concluir o cadastro');
+    }
     const user = await this.usersService.create({
       email: dto.email,
       name: dto.name,
@@ -60,24 +66,36 @@ export class AuthService {
     await this.sessionsService.revokeForUser(sessionId, userId);
   }
 
-  async refreshTokens(userId: string, sessionId: string, token: string) {
+  async refreshTokens(
+    userId: string,
+    sessionId: string,
+    token: string,
+  ): Promise<RefreshTokensResult> {
     const user = await this.usersService.findById(userId);
     const previous = tokenHash(token);
     if (!user?.isActive) {
-      throw new UnauthorizedException('Refresh token inválido');
+      return { status: 'rejected' };
     }
     const tokens = await this.generateTokens(user, sessionId);
     if (
-      !(await this.sessionsService.rotateRefreshToken(
+      await this.sessionsService.rotateRefreshToken(
         sessionId,
         user.id,
         previous,
         tokenHash(tokens.refreshToken),
-      ))
+      )
     ) {
-      throw new UnauthorizedException('Refresh token já utilizado ou revogado');
+      return { status: 'ok', ...tokens };
     }
-    return tokens;
+    const outcome = await this.sessionsService.revokeIfRefreshReuse(
+      sessionId,
+      user.id,
+      previous,
+    );
+    if (outcome === 'reuse') {
+      return { status: 'reuse', sessionId };
+    }
+    return { status: 'rejected' };
   }
 
   async getMe(userId: string) {

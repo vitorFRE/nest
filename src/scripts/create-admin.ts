@@ -4,6 +4,7 @@ import { PrismaLibSql } from '@prisma/adapter-libsql';
 import { PrismaClient } from '../generated/prisma/client';
 import { AuditAction, Role } from '../generated/prisma/enums';
 import { buildConfig } from '../config/configuration';
+import { assertPasswordPolicy } from '../common/utils/password-policy';
 
 function required(name: string): string {
   const value = process.env[name]?.trim();
@@ -15,10 +16,7 @@ function validateInput(email: string, password: string, name?: string): void {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     throw new Error('ADMIN_EMAIL deve ser um email válido');
   }
-  const passwordLength = Buffer.byteLength(password, 'utf8');
-  if (passwordLength < 8 || passwordLength > 72) {
-    throw new Error('ADMIN_PASSWORD deve ter entre 8 e 72 bytes UTF-8');
-  }
+  assertPasswordPolicy(password);
   if (name && name.length > 100) {
     throw new Error('ADMIN_NAME deve ter no máximo 100 caracteres');
   }

@@ -1,5 +1,5 @@
 import {
-  ConflictException,
+  BadRequestException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -33,7 +33,7 @@ export class UsersService {
         error instanceof Prisma.PrismaClientKnownRequestError &&
         error.code === 'P2002'
       ) {
-        throw new ConflictException('Email já está em uso');
+        throw new BadRequestException('Não foi possível concluir o cadastro');
       }
       throw error;
     }
@@ -62,6 +62,33 @@ export class UsersService {
   }
 
   async updateAdmin(id: string, data: { role?: Role; isActive?: boolean }) {
+    const current = await this.prisma.user.findUnique({
+      where: { id },
+      select: { id: true, role: true, isActive: true },
+    });
+    if (!current) throw new NotFoundException('Usuário não encontrado');
+
+    const wouldRemoveActiveAdmin =
+      current.role === Role.ADMIN &&
+      current.isActive &&
+      ((data.role !== undefined && data.role !== Role.ADMIN) ||
+        data.isActive === false);
+
+    if (wouldRemoveActiveAdmin) {
+      const otherActiveAdmins = await this.prisma.user.count({
+        where: {
+          id: { not: id },
+          role: Role.ADMIN,
+          isActive: true,
+        },
+      });
+      if (otherActiveAdmins === 0) {
+        throw new BadRequestException(
+          'Não é possível remover o último administrador ativo',
+        );
+      }
+    }
+
     try {
       return await this.prisma.user.update({
         where: { id },
